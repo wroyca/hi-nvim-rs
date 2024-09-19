@@ -22,7 +22,7 @@ impl Compiler<'_> {
     }
 
     fn write_indent(&mut self) {
-        self.program += &str::repeat(" ", usize::from(self.indent).saturating_mul(4));
+        self.program += &str::repeat(" ", usize::from(self.indent).saturating_mul(2));
     }
 
     fn compile_themes(&mut self, theme: &Theme) -> Result<()> {
@@ -47,7 +47,7 @@ impl Compiler<'_> {
 
     fn compile_highlight_group(&mut self, name: &str, highlight: &Highlight) -> Result<()> {
         self.write_indent();
-        write!(&mut self.program, r#"vim.api.nvim_set_hl(0, "{name}", {{ "#,)?;
+        write!(&mut self.program, r#"hi(0, "{name}", {{ "#,)?;
 
         fn write_unquoted(program: &mut String, name: &str, value: Option<&str>) {
             if let Some(value) = value {
@@ -115,30 +115,6 @@ impl Compiler<'_> {
 
         Ok(())
     }
-
-    pub fn compile_light_colorscheme(&mut self) -> Result<()> {
-        self.write_indent();
-        writeln!(self.program, "local function setupLightColorscheme()")?;
-        self.indent();
-        self.compile_inner(&self.colorscheme.light_theme)?;
-        self.dedent();
-        self.write_indent();
-        writeln!(self.program, "end")?;
-
-        Ok(())
-    }
-
-    pub fn compile_dark_colorscheme(&mut self) -> Result<()> {
-        self.write_indent();
-        writeln!(self.program, "local function setupDarkColorscheme()")?;
-        self.indent();
-        self.compile_inner(&self.colorscheme.dark_theme)?;
-        self.dedent();
-        self.write_indent();
-        writeln!(self.program, "end")?;
-
-        Ok(())
-    }
 }
 
 /// Compile a color scheme to a Neovim configuration.
@@ -152,38 +128,40 @@ pub fn compile(colorscheme: &Colorscheme) -> std::result::Result<String, Error> 
 
     write!(
         compiler.program,
-        r#"hi clear
-set termguicolors
-let g:colors_name = "{name}"
+        r#"if vim.g.colors_name ~= nil then vim.cmd("highlight clear") end
+vim.g.colors_name = "{name}"
 
-lua << EOF
+-- Highlight groups
+local hi = vim.api.nvim_set_hl
 "#,
         name = colorscheme.name
     )
     .map_err(|_| Error::CompilationFailed)?;
 
     compiler.indent();
-    compiler
-        .compile_light_colorscheme()
-        .map_err(|_| Error::CompilationFailed)?;
+
     writeln!(compiler.program).map_err(|_| Error::CompilationFailed)?;
+
+    // Directly compile themes and highlights for dark mode
+    writeln!(compiler.program, r#"if vim.o.background == "dark" then"#)
+        .map_err(|_| Error::CompilationFailed)?;
     compiler
-        .compile_dark_colorscheme()
+        .compile_inner(&colorscheme.dark_theme)
         .map_err(|_| Error::CompilationFailed)?;
     compiler.dedent();
 
-    writeln!(compiler.program).map_err(|_| Error::CompilationFailed)?;
+    // Directly compile themes and highlights for light mode
+    writeln!(compiler.program, r#"end"#).map_err(|_| Error::CompilationFailed)?;
+    writeln!(compiler.program, r#"if vim.o.background == "light" then"#)
+        .map_err(|_| Error::CompilationFailed)?;
+    compiler.indent();
+    compiler
+        .compile_inner(&colorscheme.light_theme)
+        .map_err(|_| Error::CompilationFailed)?;
+    compiler.dedent();
+    writeln!(compiler.program, "end").map_err(|_| Error::CompilationFailed)?;
 
-    writeln!(
-        compiler.program,
-        r#"    if vim.o.background == "dark" then
-        setupDarkColorscheme()
-    else
-        setupLightColorscheme()
-    end
-EOF"#
-    )
-    .map_err(|_| Error::CompilationFailed)?;
+    compiler.dedent();
 
     Ok(compiler.program)
 }
